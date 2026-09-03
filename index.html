@@ -1,0 +1,803 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>BIO_WATCHER // OBS_TERMINAL</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=Michroma&display=swap" rel="stylesheet">
+    <style>
+        /* --- STREAMING_CHUNK: Base Styles & Variables --- */
+        :root {
+            --c-bg: #000000;
+            --c-fg: #f4f4f4;
+            --c-accent: #cc2f7b;
+            --c-track: #ff4800;
+        }
+
+        body {
+            font-family: 'Space Mono', monospace;
+            background-color: var(--c-bg);
+            color: var(--c-fg);
+            overflow: hidden;
+            user-select: none;
+            background-image: 
+                linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px);
+            background-size: 40px 40px;
+        }
+
+        /* --- STREAMING_CHUNK: Animations --- */
+        .glitch-flicker { animation: flicker-opacity 3.5s infinite; }
+        @keyframes flicker-opacity {
+            0%, 19.9%, 22%, 62.9%, 64%, 64.9%, 70%, 100% { opacity: 1; }
+            20%, 21.9%, 63%, 63.9%, 65%, 69.9% { opacity: 0.25; }
+            21%, 63.5%, 68% { opacity: 0.7; }
+        }
+
+        .blink-text { animation: blink 1.8s linear infinite; }
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.2; }
+        }
+
+        .rec-blink { animation: recBlink 1.5s infinite; }
+        @keyframes recBlink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0; }
+        }
+
+        /* --- STREAMING_CHUNK: Components & Buttons --- */
+        .yes-btn {
+            margin-top: 36px;
+            padding: 10px 52px;
+            border: 2px solid var(--c-accent);
+            color: var(--c-accent);
+            background: transparent;
+            font-family: 'Michroma', sans-serif;
+            font-size: 1.25rem;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.25s ease;
+            text-transform: uppercase;
+            letter-spacing: 0.25em;
+            outline: none;
+        }
+        .yes-btn:hover, .yes-btn:active {
+            background-color: var(--c-accent);
+            color: #fff;
+            box-shadow: 0 0 25px rgba(204, 47, 123, 0.7);
+        }
+
+        .hud-btn {
+            background: rgba(0, 0, 0, 0.6);
+            border: 1px solid #444;
+            color: #aaa;
+            padding: 8px 14px; 
+            font-size: 10px;
+            font-weight: bold;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            cursor: pointer;
+            backdrop-filter: blur(4px);
+            transition: all 0.2s;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+        @media (min-width: 768px) {
+            .hud-btn { padding: 6px 12px; }
+        }
+        .hud-btn:hover, .hud-btn:active { border-color: #fff; color: #fff; background: rgba(255, 255, 255, 0.1); }
+        .hud-btn.active { border-color: var(--c-accent); color: var(--c-accent); background: rgba(204, 47, 123, 0.1); }
+        
+        .hud-btn-action { border-color: var(--c-accent); color: var(--c-accent); box-shadow: inset 0 0 10px rgba(204, 47, 123, 0.2); }
+        .hud-btn-action:hover, .hud-btn-action:active { background: var(--c-accent); color: #fff; box-shadow: 0 0 15px rgba(204, 47, 123, 0.5); }
+
+        /* --- STREAMING_CHUNK: Overlays & Transformers --- */
+        .crt-scanlines {
+            position: absolute;
+            inset: 0;
+            pointer-events: none;
+            background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.35) 50%);
+            background-size: 100% 4px;
+            opacity: 0.6;
+            z-index: 10;
+        }
+        .noise-overlay {
+            position: fixed;
+            inset: 0;
+            pointer-events: none;
+            z-index: 9999;
+            opacity: 0.05;
+            background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+        }
+
+        #poster-frame {
+            transform-origin: center;
+        }
+        
+        .editable-text { outline: none; transition: color 0.2s; }
+        .editable-text:hover, .editable-text:focus { color: var(--c-accent); }
+        .editable-text:empty:before { content: attr(data-placeholder); color: #555; }
+
+        .hide-on-export { transition: opacity 0.2s; }
+        .exporting .hide-on-export { opacity: 0 !important; }
+    </style>
+</head>
+<body class="w-screen h-screen flex flex-col relative bg-black overflow-hidden">
+
+    <div class="noise-overlay"></div>
+
+    <!-- ==========================================
+         0. 屏幕四周环境信息装点 (针对移动端增加了缩放自适应)
+         ========================================== -->
+    <div class="absolute inset-0 pointer-events-none z-10 hide-on-export overflow-hidden">
+        <!-- TOP-LEFT -->
+        <div class="absolute top-4 left-4 md:top-6 md:left-6 flex flex-col gap-2 opacity-60 md:opacity-80 max-md:scale-75 origin-top-left">
+            <div class="flex gap-1.5 items-center">
+                <svg viewBox="0 0 24 24" class="w-3.5 h-3.5 fill-[#f4f4f4]">
+                    <path d="M3 3h8v8H3V3zm2 2v4h4V5H5zm8-2h8v8h-8V3zm2 2v4h4V5h-4zM3 13h8v8H3v-8zm2 2v4h4v-4H5zm8-2h8v8h-8v-8zm2 2v4h4v-4h-4z"/>
+                </svg>
+                <svg viewBox="0 0 33 33" class="w-3.5 h-3.5 fill-[#cc2f7b]">
+                    <path d="M16.5,0.5c-8.838,0-16,7.164-16,16s7.162,16,16,16c8.837,0,16-7.164,16-16S25.337,0.5,16.5,0.5z M16.5,13.008 c1.928,0,3.492,1.563,3.492,3.492c0,1.928-1.564,3.492-3.492,3.492c-1.93,0-3.492-1.564-3.492-3.492 C13.008,14.571,14.57,13.008,16.5,13.008z M2.949,16.5c0-5.016,2.732-9.383,6.781-11.727l2.572,4.457l1.563,2.707 c-1.581,0.915-2.656,2.605-2.656,4.563l0,0H8.105H2.949z M16.5,30.05c-2.469,0-4.776-0.671-6.77-1.825l2.572-4.456l1.563-2.707 c0.779,0.45,1.67,0.728,2.635,0.728c0.963,0,1.855-0.277,2.635-0.728l1.562,2.707l2.573,4.457 C21.277,29.379,18.969,30.05,16.5,30.05z M24.894,16.5h-3.104c0-1.957-1.074-3.647-2.654-4.563l1.562-2.707l2.573-4.456 c4.049,2.344,6.779,6.711,6.779,11.726H24.894z"/>
+                </svg>
+            </div>
+            <div>
+                <div class="font-['Michroma'] font-bold text-[#f4f4f4] tracking-widest text-[10px] md:text-xs uppercase">BIO_WATCHER // OBS-SYS</div>
+                <div class="text-[#777] font-mono text-[8px] md:text-[9px] tracking-widest uppercase mt-1">Optical Observation / Telemetry</div>
+            </div>
+        </div>
+
+        <!-- TOP-RIGHT -->
+        <div class="absolute top-4 right-4 md:top-6 md:right-6 flex flex-col items-end gap-1 text-right opacity-60 md:opacity-80 max-md:scale-75 origin-top-right">
+            <div class="font-mono font-bold text-[#f4f4f4] text-[10px] md:text-xs flex gap-2">
+                <span id="sys-clock-corner">00:00:00</span>
+                <span class="text-[#777]">T.099</span>
+            </div>
+            <div class="text-[#777] font-mono text-[8px] md:text-[9px] tracking-widest uppercase mt-1">System Status: <span class="text-[#cc2f7b] blink-text">[ ACTIVE ]</span></div>
+            <div class="text-[8px] md:text-[9px] font-mono text-[#777] font-bold tracking-widest uppercase mt-3">TARGET OBSERVATION [PENDING]</div>
+        </div>
+
+        <!-- BOTTOM-LEFT (移动端为了留出控制台空间，隐去多余装饰，避免过于杂乱) -->
+        <div class="absolute bottom-6 left-6 flex-col gap-2 w-40 opacity-80 hidden md:flex">
+            <div class="text-[8px] md:text-[9px] font-mono text-[#777] font-bold tracking-widest uppercase border-b border-[#333] pb-1 mb-1">
+                Scan Telemetry Readout
+            </div>
+            <div class="flex justify-between font-bold text-[8px] md:text-[9px] font-mono uppercase mt-0.5">
+                <span class="text-[#f4f4f4]">STATUS: SCANNING</span>
+                <span class="text-[#777]">RAD_LVL</span>
+            </div>
+            <div class="w-full h-[3px] bg-[#222] mt-1 relative overflow-hidden">
+                <div class="absolute top-0 left-0 h-full bg-[#cc2f7b] w-[45%] blink-text"></div>
+            </div>
+            <div class="mt-2 flex flex-col gap-1 text-[8px] md:text-[9px] font-mono font-bold text-right uppercase">
+                <div class="text-[#777]">OBJ.MATCH: <span class="text-[#f4f4f4]">DETECTED</span></div>
+                <div class="text-[#777]">ANOMALY: <span class="text-[#cc2f7b]">HIGH</span></div>
+            </div>
+        </div>
+
+        <!-- BOTTOM-RIGHT -->
+        <div class="absolute bottom-6 right-6 flex-col items-end gap-2 opacity-80 hidden md:flex">
+             <div class="text-[8px] md:text-[9px] font-mono text-[#777] font-bold tracking-widest uppercase text-right">
+                <p>BIOMETRIC SCAN ALGORITHM V3.2</p>
+                <p class="mt-1">POWERED BY OMEGA-RX2</p>
+             </div>
+        </div>
+    </div>
+
+    <!-- ==========================================
+         1. 初始身份验证画面 (居中保持全屏遮挡)
+         ========================================== -->
+    <div id="init-screen" class="fixed inset-0 flex flex-col items-center justify-center bg-[#000] z-[9990] transition-opacity duration-500">
+        <div class="mb-6 w-24 h-24 md:w-32 md:h-32 relative glitch-flicker" style="filter: drop-shadow(0 0 20px rgba(255,255,255,0.7));">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 33 33" class="w-full h-full">
+                <path fill="#f4f4f4" d="M16.5,0.5c-8.838,0-16,7.164-16,16s7.162,16,16,16c8.837,0,16-7.164,16-16S25.337,0.5,16.5,0.5z M16.5,13.008 c1.928,0,3.492,1.563,3.492,3.492c0,1.928-1.564,3.492-3.492,3.492c-1.93,0-3.492-1.564-3.492-3.492 C13.008,14.571,14.57,13.008,16.5,13.008z M2.949,16.5c0-5.016,2.732-9.383,6.781-11.727l2.572,4.457l1.563,2.707 c-1.581,0.915-2.656,2.605-2.656,4.563l0,0H8.105H2.949z M16.5,30.05c-2.469,0-4.776-0.671-6.77-1.825l2.572-4.456l1.563-2.707 c0.779,0.45,1.67,0.728,2.635,0.728c0.963,0,1.855-0.277,2.635-0.728l1.562,2.707l2.573,4.457 C21.277,29.379,18.969,30.05,16.5,30.05z M24.894,16.5h-3.104c0-1.957-1.074-3.647-2.654-4.563l1.562-2.707l2.573-4.456 c4.049,2.344,6.779,6.711,6.779,11.726H24.894z"/>
+            </svg>
+        </div>
+        <h1 class="text-2xl md:text-4xl font-['Michroma'] tracking-[0.25em] mb-2 text-white shadow-[0_0_12px_#fff] text-center px-4">BIO_WATCHER // SYS</h1>
+        <p class="text-[9px] md:text-sm tracking-widest text-gray-400 blink-text text-center">> 是否通过生物验证？ / BIOMETRIC VERIFICATION REQUIRED? <</p>
+        <button id="verify-yes-btn" class="yes-btn">YES</button>
+    </div>
+
+    <!-- ==========================================
+         2. 核心画板区域 (利用 flex-1 自适应剩余高度)
+         ========================================== -->
+    <main id="main-wrapper" class="w-full flex-1 flex items-center justify-center relative z-20 overflow-hidden">
+        
+        <!-- 比例绝对锁定的画板容器 800x1260 -->
+        <div id="poster-frame" class="bg-[#0a0a0a] shadow-[0_0_50px_rgba(0,0,0,1)] border border-[#333] flex flex-col relative shrink-0"
+             style="width: 800px; height: 1260px;">
+            
+            <!-- 头部环境信息 (固定高度 40px) -->
+            <header class="h-[40px] w-full flex justify-between items-end px-[32px] pb-2 hide-on-export shrink-0">
+                <div class="flex flex-col">
+                    <span class="text-white font-bold text-[12px] leading-none">OBS_TERMINAL_V1</span>
+                    <span class="text-gray-400 text-[9px] uppercase tracking-widest mt-1">DATA INGESTION & TELEMETRY</span>
+                </div>
+                <div class="text-right flex flex-col items-end">
+                    <span id="sys-clock" class="text-white font-bold text-[12px] leading-none">00:00:00</span>
+                    <span class="text-gray-400 text-[9px] uppercase tracking-widest mt-1">SECURE CONNECTION</span>
+                </div>
+            </header>
+
+            <!-- 图像观测区 (固定高度 1000px) -->
+            <div class="h-[1000px] w-full relative bg-black overflow-hidden group shrink-0">
+                <canvas id="viewCanvas" class="w-full h-full object-cover block"></canvas>
+                <div class="crt-scanlines"></div>
+                
+                <!-- REC 指示器 -->
+                <div class="absolute top-[40px] left-[48px] z-30 font-['Michroma'] text-white font-bold flex items-center gap-1.5 drop-shadow-[0_0_5px_rgba(255,255,255,0.8)] text-[16px]">
+                    REC <span class="text-red-500 rec-blink leading-none text-[20px]">●</span>
+                </div>
+
+                <!-- 嵌入式 HUD 战术控制条 (仅 PC 端显示) -->
+                <div class="absolute bottom-[30px] left-[32px] right-[32px] hidden md:flex justify-between items-end z-30 hide-on-export opacity-90 hover:opacity-100 transition-opacity">
+                    <div class="flex flex-col gap-2">
+                        <label class="hud-btn hover:border-white w-fit">
+                            [ + SRC_IMG ]
+                            <input type="file" accept="image/*" class="hidden imgInput">
+                        </label>
+                        
+                        <div class="flex gap-2">
+                            <!-- 滤镜模式 -->
+                            <div class="flex gap-1 bg-black/50 p-1 border border-[#444] backdrop-blur-md">
+                                <button class="hud-btn mode-btn active" data-mode="dot">DOT</button>
+                                <button class="hud-btn mode-btn" data-mode="cctv">CCTV</button>
+                                <button class="hud-btn mode-btn" data-mode="code">CODE</button>
+                            </div>
+                            <!-- 色盘模式 -->
+                            <div class="flex gap-1 bg-black/50 p-1 border border-[#444] backdrop-blur-md">
+                                <button class="hud-btn pal-btn active" data-palette="rad">RAD</button>
+                                <button class="hud-btn pal-btn" data-palette="eco">ECO</button>
+                                <button class="hud-btn pal-btn" data-palette="bio">BIO</button>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <button class="exportBtn hud-btn hud-btn-action px-4 py-2">
+                        [ EXPORT_LOG ]
+                    </button>
+                </div>
+            </div>
+
+            <!-- 底部排版定制区 (固定高度 220px) -->
+            <div id="footer-container" class="h-[220px] w-full bg-[#e4e4e4] text-[#0a0a0a] px-[32px] pt-[32px] pb-[20px] flex flex-col justify-between border-t-[4px] border-black shrink-0 relative transition-colors duration-300">
+                
+                <!-- 黑白反相开关 (仅 PC 端内嵌显示) -->
+                <button class="footer-invert-btn absolute top-3 right-4 text-[10px] border border-current px-2 py-1 hide-on-export opacity-40 hover:opacity-100 transition-opacity font-bold tracking-widest cursor-pointer z-50 rounded-sm hidden md:block">
+                    [ ◧ INVERT ]
+                </button>
+
+                <!-- 数据信息栏 -->
+                <div id="footer-data-bar" class="flex justify-between items-start font-bold uppercase tracking-wider border-b-[2px] border-black pb-[15px] mb-[10px] shrink-0 text-[14px] transition-colors duration-300">
+                    <div class="flex flex-col">
+                        <span class="mb-[8px]">DATE: 2026-X</span>
+                        <span class="editable-text outline-none" id="txt-location" contenteditable="true" data-placeholder="LOCATION">LAB-09 // SECTOR-A</span>
+                    </div>
+                    <div class="flex flex-col text-right">
+                        <span class="mb-[8px]">STATUS: CLASSIFIED</span>
+                        <span class="editable-text outline-none" id="txt-id" contenteditable="true" data-placeholder="ID">SUBJECT #8849</span>
+                    </div>
+                </div>
+                
+                <!-- 防挤压自动缩放的大标题 -->
+                <div class="flex-1 flex items-center justify-center overflow-hidden">
+                    <div id="txt-banner" class="editable-text whitespace-nowrap text-[100px] font-['Michroma'] font-black tracking-tighter uppercase text-center w-full leading-[0.8]" contenteditable="true" data-placeholder="ENTER TEXT">
+                        SPECIMEN
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- ==========================================
+         3. 独立且常驻的全局控制面板 (仅手机端显示)
+         ========================================== -->
+    <div id="control-panel" class="w-full bg-[#050505] border-t border-[#333] z-50 px-2 py-3 flex flex-col gap-2 shrink-0 hide-on-export shadow-[0_-10px_30px_rgba(0,0,0,0.8)] md:hidden">
+        
+        <!-- Row 1: Upload & Mode -->
+        <div class="flex items-center justify-center gap-2">
+            <label class="hud-btn hover:border-white">
+                [ + SRC_IMG ]
+                <input type="file" accept="image/*" class="hidden imgInput">
+            </label>
+            
+            <div class="flex gap-1 bg-black p-1 border border-[#444] rounded-sm">
+                <button class="hud-btn mode-btn active" data-mode="dot">DOT</button>
+                <button class="hud-btn mode-btn" data-mode="cctv">CCTV</button>
+                <button class="hud-btn mode-btn" data-mode="code">CODE</button>
+            </div>
+        </div>
+        
+        <!-- Row 2: Palette -->
+        <div class="flex items-center justify-center">
+            <div class="flex gap-1 bg-black p-1 border border-[#444] rounded-sm">
+                <button class="hud-btn pal-btn active" data-palette="rad">RAD</button>
+                <button class="hud-btn pal-btn" data-palette="eco">ECO</button>
+                <button class="hud-btn pal-btn" data-palette="bio">BIO</button>
+            </div>
+        </div>
+
+        <!-- Row 3: Actions -->
+        <div class="flex items-stretch justify-center gap-2 w-full px-2 mt-1">
+            <button class="footer-invert-btn hud-btn flex-1 justify-center py-2">
+                [ ◧ INVERT ]
+            </button>
+            <button class="exportBtn hud-btn hud-btn-action flex-[2] justify-center py-2">
+                [ EXPORT_LOG ]
+            </button>
+        </div>
+    </div>
+
+    <canvas id="offscreenCanvas" class="hidden"></canvas>
+
+    <script>
+        /* --- STREAMING_CHUNK:Initializing clocks and scale matrices... --- */
+        document.getElementById('verify-yes-btn').addEventListener('click', () => {
+            const screen = document.getElementById('init-screen');
+            screen.style.opacity = '0';
+            setTimeout(() => screen.style.display = 'none', 500);
+        });
+
+        setInterval(() => {
+            const d = new Date();
+            const timeStr = `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}`;
+            document.getElementById('sys-clock').innerText = timeStr;
+            const sysClockCorner = document.getElementById('sys-clock-corner');
+            if (sysClockCorner) sysClockCorner.innerText = timeStr;
+        }, 1000);
+
+        // 绝对缩放矩阵逻辑：保证在任何分辨率屏幕上完美 1:1 展示 800x1260 画幅
+        function resizePoster() {
+            const wrapper = document.getElementById('main-wrapper');
+            const poster = document.getElementById('poster-frame');
+            if (!wrapper || !poster) return;
+            
+            const isMobile = window.innerWidth < 768;
+            // 手机端高度边距大幅度加大 (上下各留空避免遮挡边缘文案)，PC端保持默认32px
+            const marginX = 32; 
+            const marginY = isMobile ? 140 : 32; 
+            
+            const availableW = wrapper.clientWidth - marginX;
+            const availableH = wrapper.clientHeight - marginY;
+            
+            // 完美的等比缩放计算
+            const scale = Math.min(availableW / 800, availableH / 1260);
+            poster.style.transform = `scale(${scale})`;
+        }
+        window.addEventListener('resize', resizePoster);
+        // 初始化时延迟执行一次以确保 Flex 布局计算完毕
+        setTimeout(resizePoster, 50); 
+        resizePoster(); 
+
+        /* --- STREAMING_CHUNK:Configuring the rendering engine... --- */
+        const STATE = {
+            mode: 'dot',     
+            palette: 'rad',  
+            density: 5,      
+            contrast: 100,
+            footerInvert: false
+        };
+
+        const viewCanvas = document.getElementById('viewCanvas');
+        const vCtx = viewCanvas.getContext('2d');
+        const offCanvas = document.getElementById('offscreenCanvas');
+        const offCtx = offCanvas.getContext('2d', { willReadFrequently: true });
+        
+        // Canvas 基准渲染分辨率锁定
+        const CW = 800;
+        const CH = 1000;
+        viewCanvas.width = CW;
+        viewCanvas.height = CH;
+
+        let currentImage = null;
+
+        function loadDefaultImage() {
+            const temp = document.createElement('canvas');
+            temp.width = CW; temp.height = CH;
+            const tCtx = temp.getContext('2d');
+            
+            const grad = tCtx.createLinearGradient(0, 0, CW, CH);
+            grad.addColorStop(0, '#0a0a0a');
+            grad.addColorStop(0.5, '#2a2a2a');
+            grad.addColorStop(1, '#000000');
+            tCtx.fillStyle = grad;
+            tCtx.fillRect(0, 0, CW, CH);
+
+            tCtx.fillStyle = '#ffffff';
+            tCtx.beginPath(); tCtx.arc(CW/2, CH*0.25, 120, 0, Math.PI*2); tCtx.fill();
+            tCtx.beginPath(); tCtx.moveTo(CW/2 - 140, CH*0.35); tCtx.lineTo(CW/2 + 140, CH*0.35); 
+            tCtx.lineTo(CW/2 + 200, CH); tCtx.lineTo(CW/2 - 200, CH); tCtx.fill();
+
+            tCtx.fillStyle = '#888';
+            tCtx.fillRect(CW*0.1, CH*0.1, CW*0.8, 60);
+            tCtx.fillRect(CW*0.6, CH*0.5, 150, 200);
+
+            const img = new Image();
+            img.onload = () => { currentImage = img; render(); };
+            img.src = temp.toDataURL();
+        }
+
+        /* --- STREAMING_CHUNK:Applying visual filters and CV detection... --- */
+        function render() {
+            if (!currentImage) return;
+
+            offCanvas.width = CW; offCanvas.height = CH;
+            offCtx.fillStyle = '#000'; offCtx.fillRect(0, 0, CW, CH);
+            
+            const scale = Math.max(CW / currentImage.width, CH / currentImage.height);
+            const sw = currentImage.width * scale;
+            const sh = currentImage.height * scale;
+            offCtx.drawImage(currentImage, (CW - sw)/2, (CH - sh)/2, sw, sh);
+
+            const imgData = offCtx.getImageData(0, 0, CW, CH);
+            const pixels = imgData.data;
+
+            vCtx.fillStyle = STATE.palette === 'bio' ? '#001100' : '#000000';
+            vCtx.fillRect(0, 0, CW, CH);
+
+            const step = STATE.density;
+            const thres = STATE.contrast;
+            const trackingPoints = [];
+
+            const getColor = (r, g, b, luma, isHighlight) => {
+                if (STATE.palette === 'rad') return isHighlight ? '#ffffff' : '#555555';
+                if (STATE.palette === 'eco') return `rgb(${r},${g},${b})`;
+                if (STATE.palette === 'bio') {
+                    const gVal = isHighlight ? Math.min(255, luma + 50) : luma * 0.5;
+                    return `rgb(0, ${gVal}, 0)`;
+                }
+            };
+
+            if (STATE.mode === 'dot') {
+                for (let y = step/2; y < CH; y += step) {
+                    for (let x = step/2; x < CW; x += step) {
+                        const i = (Math.floor(y) * CW + Math.floor(x)) * 4;
+                        const r = pixels[i], g = pixels[i+1], b = pixels[i+2];
+                        const luma = 0.299*r + 0.587*g + 0.114*b;
+                        
+                        const radius = (luma / 255) * (step * 0.7);
+                        if (radius > 0.4) {
+                            const isHighlight = luma > thres;
+                            vCtx.fillStyle = getColor(r, g, b, luma, isHighlight);
+                            vCtx.beginPath(); vCtx.arc(x, y, radius, 0, Math.PI*2); vCtx.fill();
+                            if (isHighlight && Math.random() < 0.005) trackingPoints.push({x, y});
+                        }
+                    }
+                }
+            } 
+            else if (STATE.mode === 'cctv') {
+                for (let y = 0; y < CH; y += step) {
+                    for (let x = 0; x < CW; x += step) {
+                        const i = (y * CW + x) * 4;
+                        const r = pixels[i], g = pixels[i+1], b = pixels[i+2];
+                        const luma = 0.299*r + 0.587*g + 0.114*b;
+                        
+                        const isHighlight = luma > thres;
+                        if (luma > 20) {
+                            vCtx.fillStyle = getColor(r, g, b, luma, isHighlight);
+                            vCtx.fillRect(x, y, step, step);
+                            if (isHighlight && Math.random() < 0.005) trackingPoints.push({x: x+step/2, y: y+step/2});
+                        }
+                    }
+                }
+            } 
+            else if (STATE.mode === 'code') {
+                const chars = '010101XYZA<>*+=-';
+                vCtx.font = `bold ${Math.max(step * 1.5, 8)}px 'Space Mono', monospace`;
+                vCtx.textAlign = 'center'; vCtx.textBaseline = 'middle';
+
+                for (let y = step/2; y < CH; y += step * 1.5) {
+                    for (let x = step/2; x < CW; x += step * 1.2) {
+                        const i = (Math.floor(y) * CW + Math.floor(x)) * 4;
+                        const r = pixels[i], g = pixels[i+1], b = pixels[i+2];
+                        const luma = 0.299*r + 0.587*g + 0.114*b;
+                        
+                        if (luma > 20) {
+                            const c = chars[Math.floor((luma/255)*(chars.length-1))];
+                            const isHighlight = luma > thres;
+                            vCtx.fillStyle = getColor(r, g, b, luma, isHighlight);
+                            vCtx.fillText(c, x, y);
+                            if (isHighlight && Math.random() < 0.005) trackingPoints.push({x, y});
+                        }
+                    }
+                }
+            }
+
+            drawTelemetryOverlay(trackingPoints);
+        }
+
+        /* --- STREAMING_CHUNK:Drawing dynamic bounding boxes and HUD overlays... --- */
+        function drawTelemetryOverlay(points) {
+            const isBio = STATE.palette === 'bio';
+            const hudColor = isBio ? '#00ff41' : '#ffffff';
+            const dimColor = isBio ? '#007722' : '#666666';
+
+            let boxes = [];
+            if (points.length > 5) {
+                const sortedPts = [...points].sort((a, b) => a.y - b.y);
+                const splitIdx = Math.floor(sortedPts.length * 0.25);
+                const headPts = sortedPts.slice(0, splitIdx);
+                const corePts = sortedPts.slice(splitIdx);
+
+                const getBBox = (pts, lbl, lock) => {
+                    if (pts.length < 2) return null;
+                    let sumX = 0, sumY = 0;
+                    pts.forEach(p => { sumX += p.x; sumY += p.y; });
+                    const avgX = sumX / pts.length;
+                    const avgY = sumY / pts.length;
+
+                    let varX = 0, varY = 0;
+                    pts.forEach(p => {
+                        varX += Math.pow(p.x - avgX, 2);
+                        varY += Math.pow(p.y - avgY, 2);
+                    });
+                    const stdX = Math.sqrt(varX / pts.length);
+                    const stdY = Math.sqrt(varY / pts.length);
+
+                    let w = Math.max(90, stdX * 3.5);
+                    let h = Math.max(90, stdY * 3.5);
+                    let x = avgX - w / 2;
+                    let y = avgY - h / 2;
+
+                    x = Math.max(20, Math.min(CW - w - 20, x));
+                    y = Math.max(20, Math.min(CH - h - 20, y));
+
+                    return { x, y, w, h, lbl, lock };
+                };
+
+                const headBox = getBBox(headPts, 'OBJ_HEAD', true);
+                const coreBox = getBBox(corePts, 'OBJ_CORE', false);
+
+                if (headBox) boxes.push(headBox);
+                if (coreBox) boxes.push(coreBox);
+            }
+
+            // 异常兜底框
+            if (boxes.length === 0) {
+                boxes = [
+                    { x: CW*0.3, y: CH*0.15, w: CW*0.4, h: CH*0.25, lbl: 'OBJ_HEAD', lock: true },
+                    { x: CW*0.2, y: CH*0.42, w: CW*0.6, h: CH*0.45, lbl: 'OBJ_CORE', lock: false }
+                ];
+            }
+
+            boxes.forEach(b => {
+                vCtx.strokeStyle = b.lock ? hudColor : dimColor;
+                vCtx.lineWidth = b.lock ? 1.5 : 0.8;
+                vCtx.strokeRect(b.x, b.y, b.w, b.h);
+
+                const cl = 12;
+                vCtx.strokeStyle = hudColor; vCtx.lineWidth = 2;
+                vCtx.beginPath(); vCtx.moveTo(b.x, b.y+cl); vCtx.lineTo(b.x, b.y); vCtx.lineTo(b.x+cl, b.y); vCtx.stroke();
+                vCtx.beginPath(); vCtx.moveTo(b.x+b.w-cl, b.y+b.h); vCtx.lineTo(b.x+b.w, b.y+b.h); vCtx.lineTo(b.x+b.w, b.y+b.h-cl); vCtx.stroke();
+
+                vCtx.fillStyle = hudColor; vCtx.font = "10px 'Michroma'";
+                vCtx.fillText(`[${b.lbl}] // ${b.lock ? 'LOCK' : 'SCAN'}`, b.x + 6, b.y - 8);
+                vCtx.fillText(`x:${Math.floor(b.x)} y:${Math.floor(b.y)}`, b.x + 6, b.y + 16);
+            });
+
+            const maxPts = 50;
+            const step = Math.max(1, Math.floor(points.length / maxPts));
+            vCtx.fillStyle = isBio ? '#00ff00' : 'var(--c-track, #ff4800)';
+            
+            for(let i=0; i<Math.min(maxPts, points.length); i++) {
+                const p = points[i*step];
+                if(!p) continue;
+                vCtx.beginPath(); vCtx.arc(p.x, p.y, 2.5, 0, Math.PI*2); vCtx.fill();
+                
+                if (i % 5 === 0) { 
+                    vCtx.strokeStyle = isBio ? 'rgba(0, 255, 0, 0.4)' : 'rgba(255, 72, 0, 0.4)'; 
+                    vCtx.lineWidth = 1;
+                    vCtx.beginPath(); vCtx.arc(p.x, p.y, 7, 0, Math.PI*2); vCtx.stroke();
+                }
+            }
+
+            // 取景器四角 HUD
+            const m = 30, k = 25;
+            vCtx.strokeStyle = hudColor; vCtx.lineWidth = 2;
+            vCtx.beginPath(); vCtx.moveTo(m, m+k); vCtx.lineTo(m, m); vCtx.lineTo(m+k, m); vCtx.stroke();
+            vCtx.beginPath(); vCtx.moveTo(CW-m-k, m); vCtx.lineTo(CW-m, m); vCtx.lineTo(CW-m, m+k); vCtx.stroke();
+            vCtx.beginPath(); vCtx.moveTo(m, CH-m-k); vCtx.lineTo(m, CH-m); vCtx.lineTo(m+k, CH-m); vCtx.stroke();
+            vCtx.beginPath(); vCtx.moveTo(CW-m-k, CH-m); vCtx.lineTo(CW-m, CH-m); vCtx.lineTo(CW-m, CH-m-k); vCtx.stroke();
+        }
+
+        /* --- STREAMING_CHUNK:Binding UI controls and Native Canvas Export functionality... --- */
+        // 将 ID 绑定改为 Class 绑定，兼容两套控制按钮同步触发
+        document.querySelectorAll('.imgInput').forEach(el => {
+            el.addEventListener('change', e => {
+                const file = e.target.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = ev => {
+                    const img = new Image();
+                    img.onload = () => { currentImage = img; render(); };
+                    img.src = ev.target.result;
+                };
+                reader.readAsDataURL(file);
+                e.target.value = ''; 
+            });
+        });
+
+        const bindButtonGroup = (selector, stateKey) => {
+            document.querySelectorAll(selector).forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const val = btn.getAttribute(`data-${stateKey}`);
+                    
+                    // 同步所有匹配组件（双端 UI）的 active 状态
+                    document.querySelectorAll(selector).forEach(b => {
+                        if (b.getAttribute(`data-${stateKey}`) === val) {
+                            b.classList.add('active');
+                        } else {
+                            b.classList.remove('active');
+                        }
+                    });
+                    
+                    STATE[stateKey] = val;
+                    render();
+                });
+            });
+        };
+
+        bindButtonGroup('.mode-btn', 'mode');
+        bindButtonGroup('.pal-btn', 'palette');
+
+        // 完美的 1:1 Canvas 原生重绘导出
+        document.querySelectorAll('.exportBtn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const frame = document.getElementById('poster-frame');
+                const panel = document.getElementById('control-panel');
+                
+                frame.classList.add('exporting');
+                if(panel) panel.classList.add('exporting');
+                
+                setTimeout(() => {
+                    const expCanvas = document.createElement('canvas');
+                    const expCtx = expCanvas.getContext('2d');
+                    
+                    const scale = 2;
+                    const totalW = 800 * scale;
+                    const headerH = 40 * scale; 
+                    const imgH = 1000 * scale;
+                    const footerH = 220 * scale; 
+                    const totalH = headerH + imgH + footerH;
+                    
+                    expCanvas.width = totalW;
+                    expCanvas.height = totalH;
+
+                    // --- 1. 绘制背景与头部环境流 ---
+                    expCtx.fillStyle = '#0a0a0a';
+                    expCtx.fillRect(0, 0, totalW, totalH);
+
+                    const headPad = 32 * scale;
+
+                    expCtx.fillStyle = '#f4f4f4';
+                    expCtx.font = `bold ${12 * scale}px 'Space Mono'`;
+                    expCtx.textAlign = 'left';
+                    expCtx.fillText("OBS_TERMINAL_V1", headPad, 22 * scale);
+                    expCtx.fillStyle = '#888888';
+                    expCtx.font = `bold ${9 * scale}px 'Space Mono'`;
+                    expCtx.fillText("DATA INGESTION & TELEMETRY", headPad, 34 * scale);
+
+                    expCtx.textAlign = 'right';
+                    expCtx.fillStyle = '#f4f4f4';
+                    expCtx.font = `bold ${12 * scale}px 'Space Mono'`;
+                    expCtx.fillText(document.getElementById('sys-clock').innerText, totalW - headPad, 22 * scale);
+                    expCtx.fillStyle = '#888888';
+                    expCtx.font = `bold ${9 * scale}px 'Space Mono'`;
+                    expCtx.fillText("SECURE CONNECTION", totalW - headPad, 34 * scale);
+
+                    // --- 2. 绘制核心扫描区域 ---
+                    expCtx.drawImage(viewCanvas, 0, headerH, totalW, imgH);
+
+                    // 添加 CRT 扫描线蒙版
+                    expCtx.fillStyle = 'rgba(0, 0, 0, 0.35)';
+                    for(let y = 0; y < imgH; y += 4 * scale) {
+                        expCtx.fillRect(0, headerH + y, totalW, 2 * scale);
+                    }
+
+                    // --- 3. 绘制 REC 指示器 ---
+                    const recX = 48 * scale;
+                    const recY = headerH + 40 * scale;
+                    expCtx.fillStyle = '#ffffff';
+                    expCtx.font = `bold ${16 * scale}px 'Michroma'`;
+                    expCtx.textAlign = 'left';
+                    expCtx.fillText("REC", recX, recY);
+                    expCtx.fillStyle = '#ef4444'; 
+                    expCtx.font = `bold ${20 * scale}px 'Michroma'`;
+                    expCtx.fillText("●", recX + expCtx.measureText("REC ").width, recY);
+
+                    // --- 4. 绘制底部大排版层 ---
+                    const footerY = headerH + imgH;
+                    const isInv = STATE.footerInvert;
+                    
+                    expCtx.fillStyle = isInv ? '#0a0a0a' : '#e4e4e4';
+                    expCtx.fillRect(0, footerY, totalW, footerH);
+                    
+                    expCtx.fillStyle = isInv ? '#e4e4e4' : '#000000';
+                    expCtx.fillRect(0, footerY, totalW, 4 * scale);
+
+                    const pad = 32 * scale;
+                    expCtx.fillStyle = isInv ? '#e4e4e4' : '#0a0a0a';
+                    expCtx.textAlign = 'left';
+                    expCtx.font = `bold ${14 * scale}px 'Space Mono'`;
+                    expCtx.fillText("DATE: 2026-X", pad, footerY + 36 * scale);
+                    expCtx.fillText(document.getElementById('txt-location').innerText, pad, footerY + 60 * scale);
+
+                    expCtx.textAlign = 'right';
+                    expCtx.fillText("STATUS: CLASSIFIED", totalW - pad, footerY + 36 * scale);
+                    expCtx.fillText(document.getElementById('txt-id').innerText, totalW - pad, footerY + 60 * scale);
+
+                    expCtx.strokeStyle = isInv ? '#e4e4e4' : '#0a0a0a';
+                    expCtx.lineWidth = 2 * scale;
+                    expCtx.beginPath();
+                    expCtx.moveTo(pad, footerY + 75 * scale);
+                    expCtx.lineTo(totalW - pad, footerY + 75 * scale);
+                    expCtx.stroke();
+
+                    // 强制测量宽度的字号引擎
+                    const bannerTxt = document.getElementById('txt-banner').innerText;
+                    expCtx.font = `900 ${100 * scale}px 'Michroma'`;
+                    expCtx.textAlign = 'center';
+                    expCtx.textBaseline = 'middle';
+                    const maxW = totalW - (64 * scale);
+                    let txtW = expCtx.measureText(bannerTxt).width;
+                    if (txtW > maxW) {
+                        expCtx.font = `900 ${Math.floor(100 * scale * (maxW / txtW))}px 'Michroma'`;
+                    }
+                    expCtx.fillText(bannerTxt, totalW / 2, footerY + 145 * scale);
+
+                    // 触发图片下载
+                    const link = document.createElement('a');
+                    link.download = `BIO_OBSERVER_${Date.now()}.png`;
+                    link.href = expCanvas.toDataURL('image/png');
+                    link.click();
+                    
+                    frame.classList.remove('exporting');
+                    if(panel) panel.classList.remove('exporting');
+                }, 100); 
+            });
+        });
+
+        // 排版区域的正反相切换
+        document.querySelectorAll('.footer-invert-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                STATE.footerInvert = !STATE.footerInvert;
+                const container = document.getElementById('footer-container');
+                const dataBar = document.getElementById('footer-data-bar');
+                
+                if (STATE.footerInvert) {
+                    container.classList.remove('bg-[#e4e4e4]', 'text-[#0a0a0a]', 'border-black');
+                    container.classList.add('bg-[#0a0a0a]', 'text-[#e4e4e4]', 'border-[#e4e4e4]');
+                    dataBar.classList.remove('border-black');
+                    dataBar.classList.add('border-[#e4e4e4]');
+                } else {
+                    container.classList.remove('bg-[#0a0a0a]', 'text-[#e4e4e4]', 'border-[#e4e4e4]');
+                    container.classList.add('bg-[#e4e4e4]', 'text-[#0a0a0a]', 'border-black');
+                    dataBar.classList.remove('border-[#e4e4e4]');
+                    dataBar.classList.add('border-black');
+                }
+            });
+        });
+
+        // 巨型大字动态缩放算法 (不换行)
+        const txtBanner = document.getElementById('txt-banner');
+        function adjustBannerFontSize() {
+            const text = txtBanner.innerText || txtBanner.getAttribute('data-placeholder');
+            offCtx.font = "900 100px 'Michroma'";
+            const textW = offCtx.measureText(text).width;
+            const maxW = 736; // 800 - 32 - 32
+            
+            if (textW > maxW) {
+                txtBanner.style.fontSize = `${Math.floor(100 * (maxW / textW))}px`;
+            } else {
+                txtBanner.style.fontSize = '100px';
+            }
+        }
+        txtBanner.addEventListener('input', adjustBannerFontSize);
+
+        loadDefaultImage();
+        adjustBannerFontSize();
+    </script>
+</body>
+</html>
